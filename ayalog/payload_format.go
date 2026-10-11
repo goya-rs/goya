@@ -6,6 +6,15 @@ import (
 	"strings"
 )
 
+// uint32Value decodes a little-endian u32 macro value, falling back to a
+// hex dump for undersized values instead of panicking.
+func uint32Value(v []byte) (uint32, bool) {
+	if len(v) < 4 {
+		return 0, false
+	}
+	return binary.LittleEndian.Uint32(v), true
+}
+
 func FormatPayload(elems []PayloadElem) string {
 	var b strings.Builder
 
@@ -24,14 +33,22 @@ func FormatPayload(elems []PayloadElem) string {
 				b.WriteString(formatMAC(v))
 			case "mac_u":
 				b.WriteString(strings.ToUpper(formatMAC(v)))
-			case "hex":
-				fmt.Fprintf(&b, "%x", binary.LittleEndian.Uint32(v))
-			case "hex_u":
-				fmt.Fprintf(&b, "%X", binary.LittleEndian.Uint32(v))
-			case "ptr":
-				fmt.Fprintf(&b, "%#x", binary.LittleEndian.Uint32(v))
-			case "default":
-				fmt.Fprintf(&b, "%d", binary.LittleEndian.Uint32(v))
+			case "hex", "hex_u", "ptr", "default":
+				val, ok := uint32Value(v)
+				if !ok {
+					b.WriteString(hexDump(v))
+					break
+				}
+				switch k {
+				case "hex":
+					fmt.Fprintf(&b, "%x", val)
+				case "hex_u":
+					fmt.Fprintf(&b, "%X", val)
+				case "ptr":
+					fmt.Fprintf(&b, "%#x", val)
+				case "default":
+					fmt.Fprintf(&b, "%d", val)
+				}
 			default:
 				b.WriteString(hexDump(v))
 			}

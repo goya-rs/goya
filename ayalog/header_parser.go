@@ -5,24 +5,23 @@ import (
 	"fmt"
 )
 
+// minHeaderSegments is the number of TLV segments a valid aya-log header
+// must contain: target, level, module, file, line, num_args.
+const minHeaderSegments = 6
+
 func ParseHeader(header []byte) (*Header, error) {
-	var result [][]byte
-
-	for i := 1; i < len(header); {
-		switch {
-		case header[i] == 0x00:
-			i++
-
-		case i+1 < len(header) && header[i+1] == 0x00 && header[i] > 0x00:
-			size := int(header[i])
-			start := i + 2
-			data := header[start : start+size]
-			i = start + size
-			result = append(result, data)
-
-		default:
-			i++
-		}
+	result := parseHeaderSegments(header)
+	if len(result) < minHeaderSegments {
+		return nil, fmt.Errorf("malformed header: expected at least %d segments, got %d", minHeaderSegments, len(result))
+	}
+	if len(result[1]) < 1 {
+		return nil, fmt.Errorf("malformed header: level segment is empty")
+	}
+	if len(result[4]) < 4 {
+		return nil, fmt.Errorf("malformed header: line segment must be 4 bytes, got %d", len(result[4]))
+	}
+	if len(result[5]) < 4 {
+		return nil, fmt.Errorf("malformed header: num_args segment must be 4 bytes, got %d", len(result[5]))
 	}
 
 	h := &Header{
@@ -37,8 +36,40 @@ func ParseHeader(header []byte) (*Header, error) {
 	return h, nil
 }
 
+// parseHeaderSegments splits a TLV-encoded header into its data segments.
+// It tolerates truncated trailing segments (they are simply omitted).
+func parseHeaderSegments(header []byte) [][]byte {
+	var result [][]byte
+
+	for i := 1; i < len(header); {
+		switch {
+		case header[i] == 0x00:
+			i++
+
+		case i+1 < len(header) && header[i+1] == 0x00 && header[i] > 0x00:
+			size := int(header[i])
+			start := i + 2
+			if start+size > len(header) {
+				// Truncated segment: stop parsing.
+				return result
+			}
+			data := header[start : start+size]
+			i = start + size
+			result = append(result, data)
+
+		default:
+			i++
+		}
+	}
+
+	return result
+}
+
 func splitHeaderPayload(raw []byte) (header, payload []byte, err error) {
-	headerSize, _ := retrieveHeaderSize(raw)
+	headerSize, err := retrieveHeaderSize(raw)
+	if err != nil {
+		return nil, nil, err
+	}
 	if len(raw) < headerSize {
 		return nil, nil, fmt.Errorf("buffer too small: %d bytes", len(raw))
 	}
