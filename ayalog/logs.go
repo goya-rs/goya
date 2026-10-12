@@ -3,60 +3,51 @@ package ayalog
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 
 	"github.com/cilium/ebpf"
 )
 
-func Logs(coll *ebpf.Collection, progName string) {
+// Logs listens for aya-log records and prints them to stdout until the
+// process receives SIGINT or SIGTERM. It returns the error, if any, from
+// reading the ring buffer (a clean shutdown on Ctrl-C is nil).
+//
+// It is a convenience wrapper around LogsTo for the common case.
+func Logs(coll *ebpf.Collection, progName string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
+	fmt.Println("Listening to Aya logs...")
+	fmt.Println("Waiting for Ctrl-C.")
 
-	go func() {
-		defer wg.Done()
-		fmt.Println("Listening to Aya logs...")
-		fmt.Println("Waiting for Ctrl-C.")
+	err := LogsTo(ctx, coll, progName, os.Stdout, func(err error) {
+		log.Println(err)
+	})
 
-		err := runReader(ctx, coll, func(raw []byte) {
-			header, payload, err := splitHeaderPayload(raw)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-
-			elems, err := ParsePayload(payload)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-
-			head, err := ParseHeader(header)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-
-			if head.Target != progName {
-				return
-			}
-
-			msg := FormatPayload(elems)
-			printLogLine(head, msg)
-		})
-
-		if err != nil {
-			log.Println(err)
-		}
-	}()
-
-	<-ctx.Done()
 	fmt.Println("Shutting down...")
-	wg.Wait()
-	fmt.Println("Bye!")
+	return err
+}
+
+// LogsTo runs the log reader on ctx and writes one line per record to out.
+//
+// Malformed records are reported through onErr (if non-nil) and skipped.
+// Returns nil on a clean shutdown (ctx done or ring buffer closed).
+func LogsTo(ctx context.Context, coll *ebpf.Collection, progName string, out io.Writer, onErr func(error)) error {
+	reader, err := NewReader(coll, progName)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	return reader.Run(ctx, func(e Entry) {
+		fmt.Fprintln(out, formatLogLine(&e.Header, e.Message))
+	}, func(err error) {
+		if onErr != nil {
+			onErr(err)
+		}
+	})
 }

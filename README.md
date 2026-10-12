@@ -27,9 +27,17 @@ attachment := spec.String()
 
 To retrieve aya logs:
 
+```go
+// Blocks until Ctrl-C (SIGINT/SIGTERM); returns nil on a clean shutdown.
+if err := ayalog.Logs(coll, crateName); err != nil {
+	log.Fatalf("aya log reader: %v", err)
+}
 ```
-ayalog.Logs(coll, crateName)
-```
+
+`ayalog.LogsTo(ctx, coll, crateName, out, onErr)` is the library variant: it
+takes a context, writes lines to any `io.Writer` and reports malformed
+records through `onErr` instead of printing to stdout. `ayalog.NewReader`
+gives full control (iterate `Entry` values yourself).
 
 ## More infos
 
