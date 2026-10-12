@@ -5,94 +5,100 @@ import (
 	"fmt"
 )
 
-// minHeaderSegments is the number of TLV segments a valid aya-log header
-// must contain: target, level, module, file, line, num_args.
-const minHeaderSegments = 6
+var headerKinds = []uint8{
+	fieldTarget, fieldLevel, fieldModule, fieldFile, fieldLine, fieldNumArgs,
+}
 
+// ParseHeader decodes the header of an aya-log record into a Header.
+//
+// header is the leading part of a raw record as returned by
+// splitHeaderPayload: the u16 LE record size followed by the six header
+// fields (target, level, module, file, line, num_args), in that order.
+// Malformed input returns an error, never a panic.
 func ParseHeader(header []byte) (*Header, error) {
-	result := parseHeaderSegments(header)
-	if len(result) < minHeaderSegments {
-		return nil, fmt.Errorf("malformed header: expected at least %d segments, got %d", minHeaderSegments, len(result))
-	}
-	if len(result[1]) < 1 {
-		return nil, fmt.Errorf("malformed header: level segment is empty")
-	}
-	if len(result[4]) < 4 {
-		return nil, fmt.Errorf("malformed header: line segment must be 4 bytes, got %d", len(result[4]))
-	}
-	if len(result[5]) < 4 {
-		return nil, fmt.Errorf("malformed header: num_args segment must be 4 bytes, got %d", len(result[5]))
+	h := &Header{}
+
+	if len(header) < 2 {
+		return nil, fmt.Errorf("malformed header: %d bytes", len(header))
 	}
 
-	h := &Header{
-		Target:  string(result[0]),
-		Level:   LogLevel(result[1][0]),
-		Module:  string(result[2]),
-		File:    string(result[3]),
-		Line:    binary.LittleEndian.Uint32(result[4]),
-		NumArgs: binary.LittleEndian.Uint32(result[5]),
+	i := 2 // skip the record size field
+	for _, wantKind := range headerKinds {
+		if i >= len(header) {
+			return nil, fmt.Errorf("malformed header: missing field %d", wantKind)
+		}
+		f, err := readField(header, i)
+		if err != nil {
+			return nil, fmt.Errorf("malformed header: %w", err)
+		}
+		if f.kind != wantKind {
+			return nil, fmt.Errorf("malformed header: unexpected field kind %d at offset %d, want %d", f.kind, i, wantKind)
+		}
+		switch wantKind {
+		case fieldTarget:
+			h.Target = string(f.data)
+		case fieldLevel:
+			if len(f.data) < 1 {
+				return nil, fmt.Errorf("malformed header: empty level field")
+			}
+			h.Level = LogLevel(f.data[0])
+		case fieldModule:
+			h.Module = string(f.data)
+		case fieldFile:
+			h.File = string(f.data)
+		case fieldLine:
+			if len(f.data) < 4 {
+				return nil, fmt.Errorf("malformed header: line field is %d bytes, want 4", len(f.data))
+			}
+			h.Line = binary.LittleEndian.Uint32(f.data)
+		case fieldNumArgs:
+			if len(f.data) < 4 {
+				return nil, fmt.Errorf("malformed header: num_args field is %d bytes, want 4", len(f.data))
+			}
+			h.NumArgs = binary.LittleEndian.Uint32(f.data)
+		}
+		i = f.next
 	}
 
 	return h, nil
 }
 
-// parseHeaderSegments splits a TLV-encoded header into its data segments.
-// It tolerates truncated trailing segments (they are simply omitted).
-func parseHeaderSegments(header []byte) [][]byte {
-	var result [][]byte
-
-	for i := 1; i < len(header); {
-		switch {
-		case header[i] == 0x00:
-			i++
-
-		case i+1 < len(header) && header[i+1] == 0x00 && header[i] > 0x00:
-			size := int(header[i])
-			start := i + 2
-			if start+size > len(header) {
-				// Truncated segment: stop parsing.
-				return result
-			}
-			data := header[start : start+size]
-			i = start + size
-			result = append(result, data)
-
-		default:
-			i++
-		}
-	}
-
-	return result
-}
-
+// splitHeaderPayload splits a raw ring buffer record into its header and
+// payload. The record starts with a u16 LE total size, followed by the six
+// header fields; the payload is the remainder up to the end of the record
+// (the ring buffer pads the entry with zeros up to a power-of-two capacity,
+// which are ignored).
 func splitHeaderPayload(raw []byte) (header, payload []byte, err error) {
-	headerSize, err := retrieveHeaderSize(raw)
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(raw) < headerSize {
-		return nil, nil, fmt.Errorf("buffer too small: %d bytes", len(raw))
+	if len(raw) < 2 {
+		return nil, nil, fmt.Errorf("record too small: %d bytes", len(raw))
 	}
 
-	header = raw[:headerSize]
-	payload = raw[headerSize:]
-	return header, payload, nil
-}
+	recordSize := int(binary.LittleEndian.Uint16(raw[:2]))
+	if recordSize < 2 || recordSize > len(raw) {
+		return nil, nil, fmt.Errorf("invalid record size %d (record is %d bytes)", recordSize, len(raw))
+	}
 
-func retrieveHeaderSize(raw []byte) (int, error) {
-	for i := 0; i+13 <= len(raw); i++ {
-		// pattern: 04 04 00 ??
-		if raw[i] == 0x04 && raw[i+1] == 0x04 && raw[i+2] == 0x00 {
-			payloadLen := int(binary.LittleEndian.Uint32(raw[i+3 : i+7]))
-			headerSize := i + 13
+	// The record may be padded up to the reserved capacity; only the first
+	// recordSize bytes are meaningful.
+	end := recordSize
 
-			if headerSize+payloadLen > len(raw) {
-				return 0, fmt.Errorf("invalid payload length %d", payloadLen)
-			}
-
-			return headerSize, nil
+	// Walk the six header fields to find where the payload starts.
+	i := 2
+	headerEnd := 0
+	for _, wantKind := range headerKinds {
+		if i >= end {
+			return nil, nil, fmt.Errorf("malformed header: missing field %d", wantKind)
 		}
+		f, err := readField(raw, i)
+		if err != nil {
+			return nil, nil, fmt.Errorf("malformed header: %w", err)
+		}
+		if f.kind != wantKind {
+			return nil, nil, fmt.Errorf("malformed header: unexpected field kind %d at offset %d, want %d", f.kind, i, wantKind)
+		}
+		i = f.next
 	}
+	headerEnd = i
 
-	return 0, fmt.Errorf("payload length marker not found")
+	return raw[:headerEnd], raw[headerEnd:end], nil
 }

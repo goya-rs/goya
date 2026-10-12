@@ -41,12 +41,28 @@ strong reason** — runner costs are a concern.
 
 ## aya-log wire format (ayalog/)
 
-- A ring buffer record is: `header` followed by `payload`.
-- Header: TLV segments. After a leading `0x04` padding byte, each segment is
-  `<len byte> 0x00 <data>`. Segment order: target, level (1 byte), module,
-  file, line (u32 LE), num_args (u32 LE).
-- The header length is located by scanning for the `04 04 00` marker that
-  precedes the payload length field (see `retrieveHeaderSize`).
+**Critical:** the Go decoder must match the exact aya-log version pinned in
+`goya-template` (`aya-log-ebpf` / `aya-log-common`). The wire format is
+version-sensitive — verify against a real encoder dump when bumping the pin.
+
+Format (aya-log 0.2.x), little-endian:
+
+```
+record = [size u16 LE][field]*     ; size counts the whole record incl. itself
+field  = [kind u8][len u16 LE][data len bytes]
+```
+
+- The ring buffer pads the submitted entry with zeros up to the reserved
+  capacity (power of two); only the first `size` bytes are meaningful.
+- Header = the first six fields, in order: Target (kind 0), Level (1, one
+  byte), Module (2), File (3), Line (4, u32), NumArgs (5, u32).
+- Payload = the remaining fields. Text is kind 0x14 (Str). Formatted
+  arguments are preceded by a DisplayHint field (kind 0, one data byte:
+  1 default, 2 lower hex, 3 upper hex, 4 ip, 5 lower mac, 6 upper mac,
+  7 pointer) that qualifies the following argument field (0x01-0x15).
+
+Byte-fixture tests in `ayalog/header_parser_test.go` use records generated
+with the real Rust encoder, so a format drift breaks the build.
 
 ## Error handling & robustness rules
 
@@ -80,8 +96,8 @@ strong reason** — runner costs are a concern.
 - Go idioms: early returns, `fmt.Errorf` with `%w`, `context.Context` as
   first parameter for anything that can block.
 - No `os.Args`/`os.Getenv` reads inside library functions — dependency
-  injection or explicit parameters instead (see the D1 note on
-  `attach/resolve.go`, to be fixed).
+  injection or explicit parameters instead (`ResolveAttachmentWith` is the
+  reference pattern; the os.Args wrapper is deprecated).
 - Keep the public API of `attach` and `ayalog` small; export only what users
   of the library need.
 - Don't bump `github.com/cilium/ebpf` or add new dependencies without saying
