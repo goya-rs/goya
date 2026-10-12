@@ -16,20 +16,6 @@ func hexDump(b []byte) string {
 	return sb.String()
 }
 
-func formatIPv6(b []byte) string {
-	if len(b) != 16 {
-		return fmt.Sprintf("invalid ipv6 (%d bytes)", len(b))
-	}
-
-	parts := make([]string, 8)
-	for i := 0; i < 8; i++ {
-		val := uint16(b[i*2])<<8 | uint16(b[i*2+1])
-		parts[i] = fmt.Sprintf("%x", val)
-	}
-
-	return strings.Join(parts, ":")
-}
-
 func formatMAC(b []byte) string {
 	if len(b) != 6 {
 		return fmt.Sprintf("invalid mac (%d bytes)", len(b))

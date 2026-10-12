@@ -1,32 +1,13 @@
 package ayalog
 
-type PayloadElem map[string][]byte
-
-type token struct {
-	key   string
-	start int
-	size  int
-	next  int
-}
-
-const (
-	bytePadding = 0x00
-	byteMacro   = 0x01
-	byteText    = 0x14
-
-	textLenOffset   = 1
-	textDataOffset  = 3
-	macroTypeOffset = 2
-	macroSizeOffset = 4
-	macroDataOffset = 6
-)
-
-var macroKeys = map[byte]string{
-	0x01: "default",
-	0x02: "hex",
-	0x03: "hex_u",
-	0x04: "ip",
-	0x05: "mac",
-	0x06: "mac_u",
-	0x07: "ptr",
+// PayloadElem is a single decoded aya-log payload field.
+//
+// Kind is the argument kind (see field.go). Hint is the display hint that
+// preceded the field (0 when absent); the real encoder always emits a hint
+// field before a formatted argument. Data holds the raw value bytes
+// (little-endian for integers and floats).
+type PayloadElem struct {
+	Kind uint8
+	Hint byte
+	Data []byte
 }
